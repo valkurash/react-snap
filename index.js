@@ -19,6 +19,7 @@ const defaultOptions = {
   destination: null,
   concurrency: 4,
   include: ["/"],
+  sitemap: false,
   userAgent: "ReactSnap",
   // 4 params below will be refactored to one: `puppeteer: {}`
   // https://github.com/stereobooster/react-snap/issues/120
@@ -264,7 +265,7 @@ const inlineCss = async opt => {
   const criticalCss = minimalcssResult.finalCss;
   const criticalCssSize = Buffer.byteLength(criticalCss, "utf8");
 
-  const result = await page.evaluate(async () => {
+  const result = await page.evaluate(async() => {
     const stylesheets = Array.from(
       document.querySelectorAll("link[rel=stylesheet]")
     );
@@ -433,13 +434,13 @@ const fixFormFields = ({ page }) => {
   });
 };
 
-const saveAsHtml = async ({ page, filePath, options, route, fs }) => {
+const saveAsHtml = async({ page, filePath, options, route, fs }) => {
   let content = await page.content();
   content = content.replace(/react-snap-onload/g, "onload");
   const title = await page.title();
-  const minifiedContent = options.minifyHtml
-    ? minify(content, options.minifyHtml)
-    : content;
+  const minifiedContent = options.minifyHtml ?
+    minify(content, options.minifyHtml) :
+    content;
   filePath = filePath.replace(/\//g, path.sep);
   if (route.endsWith(".html")) {
     if (route.endsWith("/404.html") && !title.includes("404"))
@@ -466,7 +467,23 @@ const saveAsPng = ({ page, filePath, options, route }) => {
   return page.screenshot({ path: screenshotPath });
 };
 
-const run = async (userOptions, { fs } = { fs: nativeFs }) => {
+const buildSitemap = (routes, homepage) => {
+    const domain = homepage.replace(/\/$/, '')
+    return `
+    <?xml version="1.0" encoding="UTF-8"?>
+    <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+      ${routes.map(route => `
+        <url>
+          <loc>${domain + route}</loc>
+          <lastmod>${new Date().toISOString().split('T')[0]}</lastmod>
+          <priority>0.5</priority>
+        </url>
+      `).join(' ')}
+    </urlset>
+  `;
+};
+
+const run = async(userOptions, { fs } = { fs: nativeFs }) => {
   let options;
   try {
     options = defaults(userOptions);
@@ -514,42 +531,42 @@ const run = async (userOptions, { fs } = { fs: nativeFs }) => {
   const basePath = `http://localhost:${options.port}`;
   const publicPath = options.publicPath;
   const ajaxCache = {};
-  const { http2PushManifest } = options;
+  const { http2PushManifest, sitemap  } = options;
   const http2PushManifestItems = {};
+  const sitemapItems = [];
 
   await crawl({
     options,
     basePath,
     publicPath,
     sourceDir,
-    beforeFetch: async ({ page, route }) => {
+    beforeFetch: async({ page, route }) => {
       const {
         preloadImages,
         cacheAjaxRequests,
         preconnectThirdParty
       } = options;
+      if (!route.endsWith("/404.html")) sitemapItems.push(route);
       if (
         preloadImages ||
         cacheAjaxRequests ||
         preconnectThirdParty ||
         http2PushManifest
       ) {
-        const { ajaxCache: ac, http2PushManifestItems: hpm } = preloadResources(
-          {
-            page,
-            basePath,
-            preloadImages,
-            cacheAjaxRequests,
-            preconnectThirdParty,
-            http2PushManifest,
-            ignoreForPreload: options.ignoreForPreload
-          }
-        );
+        const { ajaxCache: ac, http2PushManifestItems: hpm } = preloadResources({
+          page,
+          basePath,
+          preloadImages,
+          cacheAjaxRequests,
+          preconnectThirdParty,
+          http2PushManifest,
+          ignoreForPreload: options.ignoreForPreload
+        });
         ajaxCache[route] = ac;
         http2PushManifestItems[route] = hpm;
       }
     },
-    afterFetch: async ({ page, route, browser }) => {
+    afterFetch: async({ page, route, browser }) => {
       const pageUrl = `${basePath}${route}`;
       if (options.removeStyleTags) await removeStyleTags({ page });
       if (options.removeScriptTags) await removeScriptTags({ page });
@@ -651,23 +668,34 @@ const run = async (userOptions, { fs } = { fs: nativeFs }) => {
             if (http2PushManifestItems[key].length !== 0)
               accumulator.push({
                 source: key,
-                headers: [
-                  {
-                    key: "Link",
-                    value: http2PushManifestItems[key]
-                      .map(x => `<${x.link}>;rel=preload;as=${x.as}`)
-                      .join(",")
-                  }
-                ]
+                headers: [{
+                  key: "Link",
+                  value: http2PushManifestItems[key]
+                    .map(x => `<${x.link}>;rel=preload;as=${x.as}`)
+                    .join(",")
+                }]
               });
             return accumulator;
-          },
-          []
+          }, []
         );
         fs.writeFileSync(
           `${destinationDir}/http2-push-manifest.json`,
           JSON.stringify(manifest)
         );
+      }
+      if (sitemap) {
+        if (!options.homepage) {
+          console.log('⚠️   To generate a sitemap.xml a domain is required, add homepage to package.json');
+          return;
+        }
+
+        const xml = buildSitemap(sitemapItems, options.homepage);
+
+        fs.writeFileSync(
+          `${destinationDir}/sitemap.xml`,
+          xml.replace(/^\s+/gm, '')
+        );
+        console.log('Sitemap generated!');
       }
     }
   });
