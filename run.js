@@ -13,6 +13,7 @@ run({
   publicPath: homepage ? url.parse(homepage).pathname : "/",
   homepage,
   ...reactSnap
-}).catch(() => {
+}).catch((error) => {
+  console.error(error)
   process.exit(1);
 });
